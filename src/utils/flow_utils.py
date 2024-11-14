@@ -3,6 +3,7 @@ import torch.nn as nn
 import numpy as np
 from rdkit import Chem, DataStructs
 from rdkit.Chem import Draw
+from PIL import Image
 import re
 
 data_name = 'ours'
@@ -348,6 +349,13 @@ def _to_numpy_array(a):  # , gpu=-1):
 def save_mol_png(mol, filepath, size=(600, 600)):
     Draw.MolToFile(mol, filepath, size=size)
 
+def save_smiles_png(valid_mols):
+    molsPerRow = 4
+    if len(valid_mols) > 0:
+        img = Draw.MolsToGridImage(valid_mols, molsPerRow=molsPerRow, subImgSize=(int(20 // molsPerRow)*200, molsPerRow*200))
+    else:
+        img = Image.new('RGB', (10, 10))
+    return img
 
 def rescale_adj(adj, type='all'):
     # Previous paper didn't use rescale_adj.
@@ -390,6 +398,49 @@ def get_fingerprint(smiles):
 
 def tahimoto(orig_fp, recon_fp):
     return DataStructs.TanimotoSimilarity(orig_fp, recon_fp)
+
+
+def generate_mols(model, temp=0.7, z_mu=None, batch_size=20, true_adj=None, device=-1):  #  gpu=-1):
+    """
+
+    :param model: Moflow model
+    :param z_mu: latent vector of a molecule
+    :param batch_size:
+    :param true_adj:
+    :param gpu:
+    :return:
+    """
+
+    z_dim = model.b_size + model.a_size  # 324 + 45 = 369   9*9*4 + 9 * 5
+    mu = np.zeros(z_dim)  # (369,) default , dtype=np.float64
+    sigma_diag = np.ones(z_dim)  # (369,)
+
+    if model.learn_dist:
+        if len(model.ln_var) == 1:
+            sigma_diag = np.sqrt(np.exp(model.ln_var.item())) * sigma_diag
+        elif len(model.ln_var) == 2:
+            sigma_diag[:model.b_size] = np.sqrt(np.exp(model.ln_var[0].item())) * sigma_diag[:model.b_size]
+            sigma_diag[model.b_size+1:] = np.sqrt(np.exp(model.ln_var[1].item())) * sigma_diag[model.b_size+1:]
+
+        # sigma_diag = xp.exp(xp.hstack((model.ln_var_x.data, model.ln_var_adj.data)))
+
+    sigma = temp * sigma_diag
+
+    with torch.no_grad():
+        if z_mu is not None:
+            mu = z_mu
+            sigma = 0.01 * np.eye(z_dim)
+        # mu: (369,), sigma: (369,), batch_size: 100, z_dim: 369
+        z = np.random.normal(mu, sigma, (batch_size, z_dim))  # .astype(np.float32)
+        z = torch.from_numpy(z).float().to(device)
+        adj, x = model.reverse(z)
+        # if len(x.shape)==4 and x.shape[1]==2:
+        #     # x1, x2 = x.chunk(2, 1)
+        #     # x = x2.squeeze(dim=1).contiguous()
+        #     x = x.mean(dim=1)
+        #     # return input_2
+
+    return adj, x  # (bs, 4, 9, 9), (bs, 9, 5)
 
 
 if __name__ == '__main__':

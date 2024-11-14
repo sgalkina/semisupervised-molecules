@@ -13,19 +13,45 @@ max_atoms = 16
 n_bonds = 4
 
 
-def one_hot_hmdb(data, atomic_num_list, out_size=38):
-    num_max_id = len(atomic_num_list)
+# def one_hot_hmdb(data, atomic_num_list, out_size=9):
+#     num_max_id = len(atomic_num_list)
+#     assert data.shape[0] == out_size
+#     b = np.zeros((out_size, num_max_id), dtype=np.float32)
+#     for i in range(out_size):
+#         ind = atomic_num_list.index(data[i])
+#         b[i, ind] = 1.
+#     return b
+
+
+# def transform_fn_hmdb(atomic_num_list, data):
+#     node, adj, label = data
+#     node = one_hot_hmdb(node, atomic_num_list).astype(np.float32)
+#     # single, double, triple and no-bond. Note that last channel axis is not connected instead of aromatic bond.
+#     adj = np.concatenate([adj[:3], 1 - np.sum(adj[:3], axis=0, keepdims=True)],
+#                          axis=0).astype(np.float32)
+#     return node, adj, label
+
+
+def one_hot_hmdb(data, out_size=9, num_max_id=5):
     assert data.shape[0] == out_size
-    b = np.zeros((out_size, num_max_id), dtype=np.float32)
-    for i in range(out_size):
-        ind = atomic_num_list.index(data[i])
-        b[i, ind] = 1.
+    b = np.zeros((out_size, num_max_id))
+    # data = data[data > 0]
+    # 6 is C: Carbon, we adopt 6:C, 7:N, 8:O, 9:F only. the last place (4) is for padding virtual node.
+    indices = np.where(data >= 6, data - 6, num_max_id - 1)
+    b[np.arange(out_size), indices] = 1
+    # print('[DEBUG] data', data, 'b', b)
     return b
 
 
 def transform_fn_hmdb(atomic_num_list, data):
-    node, adj, label = data
-    node = one_hot_hmdb(node, atomic_num_list).astype(np.float32)
+    """
+
+    :param data: ((9,), (4,9,9), (15,))
+    :return:
+    """
+    node, adj, label = data   # node (9,), adj (4,9,9), label (15,)
+    # convert to one-hot vector
+    node = one_hot_hmdb(node).astype(np.float32)
     # single, double, triple and no-bond. Note that last channel axis is not connected instead of aromatic bond.
     adj = np.concatenate([adj[:3], 1 - np.sum(adj[:3], axis=0, keepdims=True)],
                          axis=0).astype(np.float32)
@@ -82,7 +108,7 @@ class MoFlowDataModule(LightningDataModule):
         atomic_list: List[int],
         data_dir: str = "data/",
         train_val_test_split: Tuple[int, int, int] = (55_000, 5_000, 10_000),
-        batch_size: int = 64,
+        batch_size: int = 4,
         num_workers: int = 0,
         pin_memory: bool = False,
     ) -> None:
@@ -107,9 +133,9 @@ class MoFlowDataModule(LightningDataModule):
         self.data_val: Optional[Dataset] = None
         self.data_test: Optional[Dataset] = None
 
-        self.data_file_train = 'molecules/hmdb_relgcn_kekulized_ggnp.npz'
-        self.data_file_valid = 'molecules/hmdb_valid_relgcn_kekulized_ggnp.npz'
-        self.data_file_test = 'molecules/hmdb_test_relgcn_kekulized_ggnp.npz'
+        self.data_file_train = 'molecules/qm9_relgcn_kekulized_ggnp.npz'
+        self.data_file_valid = 'molecules/qm9_TEST_relgcn_kekulized_ggnp.npz'
+        self.data_file_test = 'molecules/qm9_TEST_relgcn_kekulized_ggnp.npz'
 
         self.batch_size_per_device = batch_size
 

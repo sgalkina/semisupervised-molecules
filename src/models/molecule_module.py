@@ -1,13 +1,17 @@
 from typing import Any, Dict, Tuple
-
+from rdkit import RDLogger
 import torch
 import torch.nn as nn
 from lightning import LightningModule
 from torchmetrics import MaxMetric, MeanMetric, SumMetric
 from torchmetrics.classification.accuracy import Accuracy
-from utils.flow_utils import rescale_adj, get_kl_loss, adj_to_smiles, get_fingerprint, tahimoto
+from utils.flow_utils import rescale_adj, get_kl_loss, adj_to_smiles, get_fingerprint, tahimoto, generate_mols, save_smiles_png
 from torch.autograd import Variable 
 import torch.nn.functional as F
+from rdkit import Chem
+
+
+RDLogger.DisableLog('rdApp.*')
 
 
 class MoFlowModule(LightningModule):
@@ -64,10 +68,9 @@ class MoFlowModule(LightningModule):
 
         self.net = net
 
-        # loss function
-        self.criterion = torch.nn.CrossEntropyLoss()
-
         # metric objects for calculating and averaging accuracy across batches
+        self.valid_generate = MeanMetric()
+
         self.val_acc = MeanMetric()
         self.test_acc = MeanMetric()
 
@@ -136,31 +139,31 @@ class MoFlowModule(LightningModule):
         x, adj, _ = batch
         adj_normalized = rescale_adj(adj)
 
-        # adj_flatten = torch.flatten(adj, start_dim=1)
-        # x_flatten = torch.flatten(x, start_dim=1)
-        # context = torch.cat([adj_flatten, x_flatten], 1)
-        # _, L = context.shape
+        adj_flatten = torch.flatten(adj, start_dim=1)
+        x_flatten = torch.flatten(x, start_dim=1)
+        context = torch.cat([adj_flatten, x_flatten], 1)
+        _, L = context.shape
 
         # context_flatten = Variable(F.pad(context, (1, 6346-1-L), "constant", 0), requires_grad=True)
         # context_flatten = Variable(context, requires_grad=True)
 
-        # Forward, backward and optimize
-        # z, sum_log_det_jacs = self.forward(adj, x, adj_normalized, context=context_flatten)
+        z, sum_log_det_jacs = self.forward(adj, x, adj_normalized)
+        nll = self.net.log_prob(z, sum_log_det_jacs)
+        loss = nll[0] + nll[1]
+
+        # z, sum_log_det_jacs, vae_para = self.net(adj, x, adj_normalized)
         # kl_loss = get_kl_loss(vae_para[0], vae_para[1])
         # z_plain = torch.cat((z[0].reshape(z[0].shape[0],-1),z[1].reshape(z[1].shape[0],-1)),dim=1)
         # recon_loss = torch.sqrt(nn.MSELoss()(z_plain, vae_para[2]))
 
-        # adjm, xm = self.reverse(vae_para[2], context=context_flatten)
+        # adjm, xm = self.net.reverse(vae_para[2])
         # recon_loss_adj = torch.sqrt(nn.MSELoss()(adj, adjm))
         # recon_loss_x = torch.sqrt(nn.MSELoss()(x, xm))
 
-        # nll = self.net.log_prob(z, sum_log_det_jacs, vae_para)
-        # coef = 10000
+        # nll = self.net.log_prob(z, sum_log_det_jacs)
+        # coef = 1000
         # loss = nll[0]*coef + nll[1]*coef + kl_loss + recon_loss*coef + recon_loss_adj + recon_loss_x
-
-        z, sum_log_det_jacs = self.forward(adj, x, adj_normalized)
-        nll = self.net.log_prob(z, sum_log_det_jacs)
-        loss = nll[0] + nll[1]
+        # print(nll[0], nll[1], recon_loss_adj, recon_loss_x)
         return loss
 
     def training_step(
@@ -220,11 +223,17 @@ class MoFlowModule(LightningModule):
 
     def on_validation_epoch_end(self) -> None:
         "Lightning hook that is called when a validation epoch ends."
-        acc = self.val_acc.compute()  # get current val acc
-        self.val_acc_best(acc)  # update best so far val acc
-        # log `val_acc_best` as a value through `.compute()` method, instead of as a metric object
-        # otherwise metric would be reset by lightning after each epoch
+        acc = self.val_acc.compute()
+        self.val_acc_best(acc)
         self.log("val/acc_best", self.val_acc_best.compute(), sync_dist=True, prog_bar=True)
+
+        adj, x = generate_mols(self.net, device=self.device)
+        smiles = adj_to_smiles(adj.cpu(), x.cpu(), list(self.net.atomic_list))
+        mols = [Chem.MolFromSmiles(s) for s in smiles]
+        valid_mols = [m for m in mols if m]
+        self.logger.log_image(key="samples", images=[save_smiles_png(valid_mols)])
+        self.valid_generate(len(valid_mols) / len(mols))
+        self.log("val/valid_from_latent", self.valid_generate, on_step=False, on_epoch=True, prog_bar=True)
 
     def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         """Perform a single test step on a batch of data from the test set.

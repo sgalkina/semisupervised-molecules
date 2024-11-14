@@ -189,8 +189,8 @@ class GraphAffineCoupling(nn.Module):
 
         # Process the first tensor (shaped (batch_size, 9, 5))
         self.conv_branch = nn.Sequential(
-            # nn.Conv1d(in_channels=9, out_channels=32, kernel_size=3, padding=1),  # QM9
-            nn.Conv1d(in_channels=38, out_channels=32, kernel_size=3, padding=1),  # HMDB
+            nn.Conv1d(in_channels=9, out_channels=32, kernel_size=3, padding=1),  # QM9
+            # nn.Conv1d(in_channels=38, out_channels=32, kernel_size=3, padding=1),  # HMDB
             nn.ReLU(),
             nn.BatchNorm1d(32),
             nn.MaxPool1d(kernel_size=2),
@@ -208,12 +208,12 @@ class GraphAffineCoupling(nn.Module):
         
         # Combined fully connected layers
         self.combined_fc = nn.Sequential(
-            # nn.Linear(288, 256),  # QM9
-            nn.Linear(608, 256),  # HMDB
+            nn.Linear(288, 256),  # QM9
+            # nn.Linear(608, 256),  # HMDB
             nn.ReLU(),
             nn.BatchNorm1d(256),
-            nn.Linear(256, 38*30),  # HMDB
-            # nn.Linear(256, 9*10),  # QM9
+            # nn.Linear(256, 38*30),  # HMDB
+            nn.Linear(256, 9*10),  # QM9
             nn.ReLU()
         )
         
