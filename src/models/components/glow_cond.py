@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from models.components.basic import ActNorm, InvConv2dLU, InvConv2d, ActNorm2D
-from models.components.coupling import AffineCoupling, GraphAffineCoupling
+from models.components.coupling_cond import AffineCoupling, GraphAffineCoupling
 
 
 class Flow(nn.Module):
@@ -295,7 +295,7 @@ def test_Block():
     adj = torch.randint(0, 2, (bs, num_edge_type, nodes, nodes), dtype=torch.float32)
     adj = rescale_adj(adj)
 
-    gc = Block(in_channel=4, n_flow=60, squeeze_fold=3, hidden_channels=[128,128], affine=True, conv_lu=True)
+    gc = Block(in_channel=4, n_flow=60, squeeze_fold=2, hidden_channels=[128,128], affine=True, conv_lu=True)
 
     out = gc(adj)
     print('adj.shape:', adj.shape)

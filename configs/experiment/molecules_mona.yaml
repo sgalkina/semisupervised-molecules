@@ -1,0 +1,61 @@
+# @package _global_
+
+# to execute this experiment run:
+# python train.py experiment=example
+
+defaults:
+  - override /data: molecules
+  - override /model: molecules
+  - override /callbacks: default
+  - override /trainer: default
+
+# all parameters below will be merged with parameters from default configurations set above
+# this allows you to overwrite only specified parameters
+
+tags: ["mnist", "simple_dense_net"]
+
+seed: 12345
+
+trainer:
+  min_epochs: 10
+  max_epochs: 10
+  gradient_clip_val: 0.5
+
+model:
+  optimizer:
+    lr: 0.002
+  compile: false
+
+data:
+  batch_size: 256
+
+net:
+  atomic_list: [1, 5, 6, 7, 8, 9, 11, 13, 14, 15, 16, 17, 19, 24, 26, 27, 33, 34, 35, 53, 79, 0]
+  b_n_type: 4
+  b_n_flow: 10
+  b_n_block: 1
+  b_n_squeeze: 3
+  b_hidden_ch: [128, 128]
+  b_affine: True
+  b_conv_lu: 1
+  a_n_node: 200
+  a_n_type: 22
+  a_hidden_gnn: [64]
+  a_hidden_lin: [128, 64]
+  a_n_flow: 27
+  a_n_block: 1
+  mask_row_size_list: [1]
+  mask_row_stride_list: [1]
+  a_affine: True
+  learn_dist: 1
+  noise_scale: 0.6
+  # enc_conv_dim: [[256, 128],128]
+  # enc_linear_dim: [128]
+  # dec_dim: [128, 128]
+
+logger:
+  wandb:
+    tags: ${tags}
+    group: "mnist"
+  aim:
+    experiment: "mnist"

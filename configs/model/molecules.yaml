@@ -16,16 +16,17 @@ scheduler:
 net:
   _target_: src.models.components.moflow.MoFlow
   # atomic_list: [5, 6, 7, 8, 9, 14, 15, 16, 17, 27, 33, 34, 35, 53, 0]
-  atomic_list: [6, 7, 8, 9, 0]
+  # atomic_list: [6, 7, 8, 9, 0]
+  atomic_list: [1, 5, 6, 7, 8, 9, 11, 13, 14, 15, 16, 17, 19, 24, 26, 27, 33, 34, 35, 53, 79, 0]
   b_n_type: 4
   b_n_flow: 10
   b_n_block: 1
-  b_n_squeeze: 3
+  b_n_squeeze: 5
   b_hidden_ch: [128, 128]
   b_affine: True
   b_conv_lu: 1
-  a_n_node: 9
-  a_n_type: 5
+  a_n_node: 200
+  a_n_type: 22
   a_hidden_gnn: [64]
   a_hidden_lin: [128, 64]
   a_n_flow: 27

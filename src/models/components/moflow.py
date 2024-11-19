@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from src.models.components.glow import Glow, GlowOnGraph
+from src.models.components.glow_cond import Glow, GlowOnGraph
 from utils.flow_utils import rescale_adj
 
 
@@ -145,7 +145,7 @@ class MoFlow(nn.Module):
         )
         self.atomic_list = atomic_list
 
-    def forward(self, adj, x, adj_normalized):
+    def forward(self, adj, x, adj_normalized, context):
         """
         :param adj:  (256,4,9,9)
         :param x: (256,9,5)
@@ -159,7 +159,7 @@ class MoFlow(nn.Module):
         else:
             h = h + torch.rand_like(x) * self.noise_scale  # noise_scale default 0.9
             # h, log_det_logit_x = logit_pre_process(h) # to delete
-        h, sum_log_det_jacs_x = self.atom_model(adj_normalized, h)
+        h, sum_log_det_jacs_x = self.atom_model(adj_normalized, h, context)
         # sum_log_det_jacs_x = sum_log_det_jacs_x + log_det_logit_x  # to delete
 
         # add uniform noise to adjacency tensors
@@ -168,13 +168,13 @@ class MoFlow(nn.Module):
         else:
             adj = adj + torch.rand_like(adj) * self.noise_scale  # (256,4,9,9) noise_scale default 0.9
             # adj, log_det_logit_adj = logit_pre_process(adj)  # to delete
-        adj_h, sum_log_det_jacs_adj = self.bond_model(adj)
+        adj_h, sum_log_det_jacs_adj = self.bond_model(adj, context)
         # sum_log_det_jacs_adj = log_det_logit_adj + sum_log_det_jacs_adj  # to delete
         out = [h, adj_h]  # combine to one tensor later bs * dim tensor
 
         return out, [sum_log_det_jacs_x, sum_log_det_jacs_adj]
 
-    def reverse(self, z, true_adj=None):  # change!!! z[0] --> for z_x, z[1] for z_adj, a list!!!
+    def reverse(self, z, context, true_adj=None):  # change!!! z[0] --> for z_x, z[1] for z_adj, a list!!!
         """
         Returns a molecule, given its latent vector.
         :param z: latent vector. Shape: [B, N*N*M + N*T]    (100,369) 369=9*9 * 4 + 9*5
@@ -191,7 +191,7 @@ class MoFlow(nn.Module):
 
             if true_adj is None:
                 h_adj = z_adj.reshape(batch_size, self.b_n_type, self.a_n_node, self.a_n_node)  # (100,4,9,9)
-                h_adj = self.bond_model.reverse(h_adj)
+                h_adj = self.bond_model.reverse(h_adj, context)
 
                 if self.noise_scale == 0:
                     h_adj = (h_adj + 0.5) * 2
@@ -207,7 +207,7 @@ class MoFlow(nn.Module):
 
             h_x = z_x.reshape(batch_size, self.a_n_node, self.a_n_type)
             adj_normalized = rescale_adj(adj).to(h_x)
-            h_x = self.atom_model.reverse(adj_normalized, h_x)
+            h_x = self.atom_model.reverse(adj_normalized, h_x, context)
             if self.noise_scale == 0:
                 h_x = (h_x + 0.5) * 2
             # h_x = torch.sigmoid(h_x)  # to delete for logit

@@ -43,25 +43,29 @@ class AffineCoupling(nn.Module):  # delete
         
         # Fully connected branch for the second tensor
         self.fc_branch = nn.Sequential(
-            nn.Linear(6346, 128),
+            # nn.Linear(6346, 128),
+            nn.Linear(201, 128),
             nn.ReLU(),
             nn.BatchNorm1d(128)
         )
         
         # Combined fully connected layers
         self.combined_fc = nn.Sequential(
-            nn.Linear(32 + 128, 128),  # input size is the sum of the two branches
+            # nn.Linear(32 + 128, 128),  # input size is the sum of the two branches
+            nn.Linear(12800 + 128, 128),  # MoNa, 
             nn.ReLU(),
             nn.BatchNorm1d(128),
             # nn.Linear(128, in_channel * 3 * 3),  # QM9
-            nn.Linear(128, in_channel * 2 * 2),  # HMDB
+            nn.Linear(128, in_channel * 40 * 40),  # MoNa
+            # nn.Linear(128, in_channel * 2 * 2),  # HMDB
             nn.ReLU()
         )
         
         # Final layer to reshape the output to (batch_size, 9, 3, 3)
         self.output_layer = nn.Sequential(
+            nn.Unflatten(1, (in_channel, 40, 40))  # MoNa
             # nn.Unflatten(1, (in_channel, 3, 3))  # QM9
-            nn.Unflatten(1, (in_channel, 2, 2))  # HMDB
+            # nn.Unflatten(1, (in_channel, 2, 2))  # HMDB
         )
 
     def forward(self, input, C):
@@ -189,8 +193,9 @@ class GraphAffineCoupling(nn.Module):
 
         # Process the first tensor (shaped (batch_size, 9, 5))
         self.conv_branch = nn.Sequential(
-            nn.Conv1d(in_channels=9, out_channels=32, kernel_size=3, padding=1),  # QM9
+            # nn.Conv1d(in_channels=9, out_channels=32, kernel_size=3, padding=1),  # QM9
             # nn.Conv1d(in_channels=38, out_channels=32, kernel_size=3, padding=1),  # HMDB
+            nn.Conv1d(in_channels=200, out_channels=32, kernel_size=3, padding=1),  # MoNa
             nn.ReLU(),
             nn.BatchNorm1d(32),
             nn.MaxPool1d(kernel_size=2),
@@ -201,26 +206,31 @@ class GraphAffineCoupling(nn.Module):
         
         # Process the second tensor (shaped (batch_size, 200))
         self.fc_branch = nn.Sequential(
-            nn.Linear(6346, 128),
+            # nn.Linear(6346, 128),
+            # nn.Linear(369, 128),  # QM9
+            nn.Linear(201, 128),  # MoNa
             nn.ReLU(),
             nn.BatchNorm1d(128)
         )
         
         # Combined fully connected layers
         self.combined_fc = nn.Sequential(
-            nn.Linear(288, 256),  # QM9
+            nn.Linear(832, 256),  # MoNa
+            # nn.Linear(288, 256),  # QM9
             # nn.Linear(608, 256),  # HMDB
             nn.ReLU(),
             nn.BatchNorm1d(256),
             # nn.Linear(256, 38*30),  # HMDB
-            nn.Linear(256, 9*10),  # QM9
+            # nn.Linear(256, 9*10),  # QM9
+            nn.Linear(256, 200*22*2),  # MoNa
             nn.ReLU()
         )
         
         # Final layer to reshape the output to (batch_size, 9, 5)
         self.output_layer = nn.Sequential(
             # nn.Unflatten(1, (9, 10)) # QM9
-            nn.Unflatten(1, (38, 30)) # HMDB
+            # nn.Unflatten(1, (38, 30)) # HMDB
+             nn.Unflatten(1, (200, 22*2)) # QM9
         )
 
     def forward(self, adj, input, C):

@@ -7,10 +7,50 @@ from lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import transforms
 from data.numpy_dataset import NumpyTupleDataset
+import data.spectrum_processing as dt
 from functools import partial
+import pandas as pd
 
-max_atoms = 16
+max_atoms = 200
 n_bonds = 4
+spec_max_mz = 2500
+max_num_peaks = 100
+min_intensity = 0.1
+
+
+def one_hot_hmdb(data, atomic_num_list, out_size=max_atoms):
+    num_max_id = len(atomic_num_list)
+    assert data.shape[0] == out_size
+    b = np.zeros((out_size, num_max_id), dtype=np.float32)
+    for i in range(out_size):
+        ind = atomic_num_list.index(data[i])
+        b[i, ind] = 1.
+    return b
+
+
+def transform_label(label):
+    spectrum = label[0]
+    spectrum = [(float(s.split()[0]), float(s.split()[1])) for s in spectrum.strip().split('\n')]
+    mz, ints = zip(*spectrum)
+
+    spectrum = pd.DataFrame({'m/z': mz, 'intensity': ints})
+    spectrum = dt.FilterPeaks(spec_max_mz, min_intensity)(spectrum)
+    spectrum = dt.Normalize(intensity=True, mass=False, rescale_intensity=True, max_mz=spec_max_mz)(spectrum)
+    spectrum = dt.TopNPeaks(max_num_peaks)(spectrum)
+    spectrum = dt.ToMZIntConcatAlt(max_num_peaks)(spectrum)
+
+    spectrum = list(spectrum)
+    exact_mass = label[-1]
+    return np.array([float(exact_mass)] + spectrum)
+
+
+def transform_fn_hmdb(atomic_num_list, data):
+    node, adj, label = data
+    node = one_hot_hmdb(node, atomic_num_list).astype(np.float32)
+    # single, double, triple and no-bond. Note that last channel axis is not connected instead of aromatic bond.
+    adj = np.concatenate([adj[:3], 1 - np.sum(adj[:3], axis=0, keepdims=True)],
+                         axis=0).astype(np.float32)
+    return node, adj, transform_label(label)
 
 
 # def one_hot_hmdb(data, atomic_num_list, out_size=9):
@@ -32,30 +72,30 @@ n_bonds = 4
 #     return node, adj, label
 
 
-def one_hot_hmdb(data, out_size=9, num_max_id=5):
-    assert data.shape[0] == out_size
-    b = np.zeros((out_size, num_max_id))
-    # data = data[data > 0]
-    # 6 is C: Carbon, we adopt 6:C, 7:N, 8:O, 9:F only. the last place (4) is for padding virtual node.
-    indices = np.where(data >= 6, data - 6, num_max_id - 1)
-    b[np.arange(out_size), indices] = 1
-    # print('[DEBUG] data', data, 'b', b)
-    return b
+# def one_hot_hmdb(data, out_size=9, num_max_id=5):
+#     assert data.shape[0] == out_size
+#     b = np.zeros((out_size, num_max_id))
+#     # data = data[data > 0]
+#     # 6 is C: Carbon, we adopt 6:C, 7:N, 8:O, 9:F only. the last place (4) is for padding virtual node.
+#     indices = np.where(data >= 6, data - 6, num_max_id - 1)
+#     b[np.arange(out_size), indices] = 1
+#     # print('[DEBUG] data', data, 'b', b)
+#     return b
 
 
-def transform_fn_hmdb(atomic_num_list, data):
-    """
+# def transform_fn_hmdb(atomic_num_list, data):
+#     """
 
-    :param data: ((9,), (4,9,9), (15,))
-    :return:
-    """
-    node, adj, label = data   # node (9,), adj (4,9,9), label (15,)
-    # convert to one-hot vector
-    node = one_hot_hmdb(node).astype(np.float32)
-    # single, double, triple and no-bond. Note that last channel axis is not connected instead of aromatic bond.
-    adj = np.concatenate([adj[:3], 1 - np.sum(adj[:3], axis=0, keepdims=True)],
-                         axis=0).astype(np.float32)
-    return node, adj, label
+#     :param data: ((9,), (4,9,9), (15,))
+#     :return:
+#     """
+#     node, adj, label = data   # node (9,), adj (4,9,9), label (15,)
+#     # convert to one-hot vector
+#     node = one_hot_hmdb(node).astype(np.float32)
+#     # single, double, triple and no-bond. Note that last channel axis is not connected instead of aromatic bond.
+#     adj = np.concatenate([adj[:3], 1 - np.sum(adj[:3], axis=0, keepdims=True)],
+#                          axis=0).astype(np.float32)
+#     return node, adj, label
 
 
 class MoFlowDataModule(LightningDataModule):
@@ -133,13 +173,11 @@ class MoFlowDataModule(LightningDataModule):
         self.data_val: Optional[Dataset] = None
         self.data_test: Optional[Dataset] = None
 
-        self.data_file_train = 'molecules/qm9_relgcn_kekulized_ggnp.npz'
-        self.data_file_valid = 'molecules/qm9_TEST_relgcn_kekulized_ggnp.npz'
-        self.data_file_test = 'molecules/qm9_TEST_relgcn_kekulized_ggnp.npz'
+        self.data_file_train = 'molecules/mona_relgcn_kekulized_ggnp.npz'
+        self.data_file_valid = 'molecules/mona_TEST_relgcn_kekulized_ggnp.npz'
+        self.data_file_test = 'molecules/mona_TEST_relgcn_kekulized_ggnp.npz'
 
         self.batch_size_per_device = batch_size
-
-        
 
     @property
     def num_classes(self) -> int:

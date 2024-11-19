@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 import torch
 
+# export PYTHONPATH="${PYTHONPATH}:/home/nmb127/code/semisupervised-molecules/src"
+
 from src.data.mnist_datamodule import MNISTDataModule
+from src.data.molecule_datamodule import MoFlowDataModule
+from src.utils.flow_utils import construct_mol, check_valency, adj_to_smiles
 
 
 @pytest.mark.parametrize("batch_size", [32, 128])
@@ -36,3 +40,23 @@ def test_mnist_datamodule(batch_size: int) -> None:
     assert len(y) == batch_size
     assert x.dtype == torch.float32
     assert y.dtype == torch.int64
+
+
+@pytest.mark.parametrize("batch_size", [32])
+def test_construct_mol(batch_size: int) -> None:
+    data_dir = "data/"
+
+    ATOMIC_LIST = [1, 5, 6, 7, 8, 9, 11, 13, 14, 15, 16, 17, 19, 24, 26, 27, 33, 34, 35, 53, 79, 0]
+
+    dm = MoFlowDataModule(data_dir=data_dir, batch_size=batch_size, atomic_list=ATOMIC_LIST)
+    dm.prepare_data()
+    dm.setup()
+
+    batch = next(iter(dm.test_dataloader()))
+    x, adj, label = batch
+    print(x, adj, label)
+    
+    mol = construct_mol(x[0], adj[0], ATOMIC_LIST)
+    assert check_valency(mol)
+
+    assert len(adj_to_smiles(adj, x, ATOMIC_LIST)) == x.shape[0]

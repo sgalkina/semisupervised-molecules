@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from rdkit import Chem, DataStructs
-from rdkit.Chem import Draw
+from rdkit.Chem import Draw, SanitizeMol
 from PIL import Image
 import re
 
@@ -84,7 +84,7 @@ def construct_mol(x, A, atomic_num_list):
     # last a
     atoms_exist = atoms != len(atomic_num_list) - 1
     atoms = atoms[atoms_exist]
-    # print('num atoms: {}'.format(sum(atoms>0)))
+    print('num atoms: {}'.format(sum(atoms>0)))
 
     for atom in atoms:
         mol.AddAtom(Chem.Atom(int(atomic_num_list[atom])))
@@ -108,7 +108,8 @@ def construct_mol(x, A, atomic_num_list):
             if flag:
                 continue
             else:
-                assert len(atomid_valence) == 2
+                if len(atomid_valence) != 2:
+                    return None
                 idx = atomid_valence[0]
                 v = atomid_valence[1]
                 an = mol.GetAtomWithIdx(idx).GetAtomicNum()
@@ -185,7 +186,7 @@ def check_valency(mol):
     try:
         Chem.SanitizeMol(mol, sanitizeOps=Chem.SanitizeFlags.SANITIZE_PROPERTIES)
         return True, None
-    except ValueError as e:
+    except (RuntimeError, ValueError) as e:
         e = str(e)
         p = e.find('#')
         e_sub = e[p:]
@@ -248,8 +249,16 @@ def check_tensor(x):
 def adj_to_smiles(adj, x, atomic_num_list):
     # adj = _to_numpy_array(adj, gpu)
     # x = _to_numpy_array(x, gpu)
-    valid = [Chem.MolToSmiles(construct_mol(x_elem, adj_elem, atomic_num_list), isomericSmiles=True)
-             for x_elem, adj_elem in zip(x, adj)]
+    valid_mols = [construct_mol(x_elem, adj_elem, atomic_num_list) for x_elem, adj_elem in zip(x, adj)]
+    valid = []
+    for s in valid_mols:
+        if s is not None:
+            try:
+                valid.append(Chem.MolToSmiles(s, isomericSmiles=True))
+            except (RuntimeError, ValueError) as e:
+                valid.append(None)
+        else:
+            valid.append(None)
     return valid
 
 
@@ -349,10 +358,24 @@ def _to_numpy_array(a):  # , gpu=-1):
 def save_mol_png(mol, filepath, size=(600, 600)):
     Draw.MolToFile(mol, filepath, size=size)
 
-def save_smiles_png(valid_mols):
-    molsPerRow = 4
+
+def filter_valid_mols(mols):
+    valid_mols = []
+    for mol in mols:
+        if mol is not None:
+            try:
+                SanitizeMol(mol)
+                valid_mols.append(mol)
+            except Exception as e:
+                print(f"Skipping invalid molecule: {e}")
+    return valid_mols
+
+
+def save_smiles_png(mols):
+    valid_mols = filter_valid_mols(mols)
+    molsPerRow = 2
     if len(valid_mols) > 0:
-        img = Draw.MolsToGridImage(valid_mols, molsPerRow=molsPerRow, subImgSize=(int(20 // molsPerRow)*200, molsPerRow*200))
+        img = Draw.MolsToGridImage(valid_mols, molsPerRow=molsPerRow, subImgSize=(100, 100))
     else:
         img = Image.new('RGB', (10, 10))
     return img
@@ -386,6 +409,8 @@ def get_kl_loss(mu, logvar):
 
 
 def get_fingerprint(smiles):
+    if smiles is None:
+        return None
     mol = Chem.MolFromSmiles(smiles)
     # mfpgen = Chem.rdFingerprintGenerator.GetMorganGenerator(radius=2,fpSize=2048)
     if mol is not None: # Check if molecule conversion
@@ -400,7 +425,7 @@ def tahimoto(orig_fp, recon_fp):
     return DataStructs.TanimotoSimilarity(orig_fp, recon_fp)
 
 
-def generate_mols(model, temp=0.7, z_mu=None, batch_size=20, true_adj=None, device=-1):  #  gpu=-1):
+def generate_mols(model, context, temp=0.7, z_mu=None, true_adj=None, device=-1):  #  gpu=-1):
     """
 
     :param model: Moflow model
@@ -410,6 +435,7 @@ def generate_mols(model, temp=0.7, z_mu=None, batch_size=20, true_adj=None, devi
     :param gpu:
     :return:
     """
+    batch_size = context.shape[0]
 
     z_dim = model.b_size + model.a_size  # 324 + 45 = 369   9*9*4 + 9 * 5
     mu = np.zeros(z_dim)  # (369,) default , dtype=np.float64
@@ -433,7 +459,7 @@ def generate_mols(model, temp=0.7, z_mu=None, batch_size=20, true_adj=None, devi
         # mu: (369,), sigma: (369,), batch_size: 100, z_dim: 369
         z = np.random.normal(mu, sigma, (batch_size, z_dim))  # .astype(np.float32)
         z = torch.from_numpy(z).float().to(device)
-        adj, x = model.reverse(z)
+        adj, x = model.reverse(z, context)
         # if len(x.shape)==4 and x.shape[1]==2:
         #     # x1, x2 = x.chunk(2, 1)
         #     # x = x2.squeeze(dim=1).contiguous()

@@ -93,27 +93,27 @@ class MoFlowModule(LightningModule):
         """
         return self.net(*args)
 
-    def reverse(self, z) -> torch.Tensor:
+    def reverse(self, z, context) -> torch.Tensor:
         """Perform a reverse pass through the model `self.net`.
 
         :param x: A tensor of images.
         :return: A tensor of logits.
         """
-        return self.net.reverse(z)
+        return self.net.reverse(z, context)
 
     def reverse_molecule(self, batch) -> torch.Tensor:
-        """Perform a reverse pass through the model `self.net`.
+        """Perform a reverse pass - conditional only! - through the model `self.net`.
         using a batch to reconstruct
 
         :param x: A tensor of images.
         :return: A tensor of logits.
         """
-        x, adj, _ = batch
+        x, adj, spectrum = batch
         adj_normalized = rescale_adj(adj)
-        z, _ = self.forward(adj, x, adj_normalized)
-        z0 = z[0].reshape(z[0].shape[0], -1)
-        z1 = z[1].reshape(z[1].shape[0], -1)
-        adj_rev, x_rev = self.reverse(torch.cat([z0,z1], dim=1))
+        context_flatten = Variable(spectrum.float(), requires_grad=True)
+
+        adj_rev, x_rev = generate_mols(self.net, context_flatten, device=0)
+
         return x_rev, adj_rev
 
     def on_train_start(self) -> None:
@@ -136,18 +136,11 @@ class MoFlowModule(LightningModule):
             - A tensor of predictions.
             - A tensor of target labels.
         """
-        x, adj, _ = batch
+        x, adj, spectrum = batch
         adj_normalized = rescale_adj(adj)
+        context_flatten = Variable(spectrum.float(), requires_grad=True)
 
-        adj_flatten = torch.flatten(adj, start_dim=1)
-        x_flatten = torch.flatten(x, start_dim=1)
-        context = torch.cat([adj_flatten, x_flatten], 1)
-        _, L = context.shape
-
-        # context_flatten = Variable(F.pad(context, (1, 6346-1-L), "constant", 0), requires_grad=True)
-        # context_flatten = Variable(context, requires_grad=True)
-
-        z, sum_log_det_jacs = self.forward(adj, x, adj_normalized)
+        z, sum_log_det_jacs = self.forward(adj, x, adj_normalized, context_flatten)
         nll = self.net.log_prob(z, sum_log_det_jacs)
         loss = nll[0] + nll[1]
 
@@ -194,9 +187,9 @@ class MoFlowModule(LightningModule):
             recon_fp = get_fingerprint(rec)
 
             if orig_fp is not None and recon_fp is not None:
-                yield tahimoto(orig_fp, recon_fp)
+                yield tahimoto(orig_fp, recon_fp), rec, rev
             else:
-                yield None
+                yield None, rec, rev
 
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         """Perform a single validation step on a batch of data from the validation set.
@@ -208,32 +201,39 @@ class MoFlowModule(LightningModule):
         loss = self.model_step(batch)
         self.val_loss(loss)
         self.log("val/loss", self.val_loss, on_step=False, on_epoch=True, prog_bar=True)
+        all_smiles = []
 
         if batch_idx == 0:
-            x, adj, _ = batch
-            x_rev, adj_rev = self.reverse_molecule(batch)
-            for sim in self.reconstruction_similarity(x, adj, x_rev, adj_rev):
+            x, adj, _ = batch[:10]
+            x_rev, adj_rev = self.reverse_molecule(batch[:10])
+            for sim, orig, recon in self.reconstruction_similarity(x, adj, x_rev, adj_rev):
                 if sim is None:
-                    self.val_count(1)
+                    self.val_count.update(1)
                 else:
-                    self.val_acc(sim)
-
+                    self.val_acc.update(sim)
+                    self.val_acc_best.update(sim)
+                all_smiles.append(orig if orig else "*")
+                all_smiles.append(recon if recon else "*")
+        
+            self.log("val/acc_best", self.val_acc_best, on_step=False, on_epoch=True, prog_bar=True)
             self.log("val/similarity", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
             self.log("val/nan_count", self.val_count, on_step=False, on_epoch=True, prog_bar=True)
+            
+            mols = [Chem.MolFromSmiles(s) for s in all_smiles]
+            valid_mols = [m for m in mols if m]
+            self.logger.log_image(key="samples", images=[save_smiles_png(valid_mols)])
+
 
     def on_validation_epoch_end(self) -> None:
         "Lightning hook that is called when a validation epoch ends."
-        acc = self.val_acc.compute()
-        self.val_acc_best(acc)
-        self.log("val/acc_best", self.val_acc_best.compute(), sync_dist=True, prog_bar=True)
-
-        adj, x = generate_mols(self.net, device=self.device)
-        smiles = adj_to_smiles(adj.cpu(), x.cpu(), list(self.net.atomic_list))
-        mols = [Chem.MolFromSmiles(s) for s in smiles]
-        valid_mols = [m for m in mols if m]
-        self.logger.log_image(key="samples", images=[save_smiles_png(valid_mols)])
-        self.valid_generate(len(valid_mols) / len(mols))
-        self.log("val/valid_from_latent", self.valid_generate, on_step=False, on_epoch=True, prog_bar=True)
+        pass
+        # adj, x = generate_mols(self.net, device=self.device)
+        # smiles = adj_to_smiles(adj.cpu(), x.cpu(), list(self.net.atomic_list))
+        # mols = [Chem.MolFromSmiles(s) for s in smiles]
+        # valid_mols = [m for m in mols if m]
+        # self.logger.log_image(key="samples", images=[save_smiles_png(valid_mols)])
+        # self.valid_generate(len(valid_mols) / len(mols))
+        # self.log("val/valid_from_latent", self.valid_generate, on_step=False, on_epoch=True, prog_bar=True)
 
     def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         """Perform a single test step on a batch of data from the test set.
@@ -247,8 +247,8 @@ class MoFlowModule(LightningModule):
         self.log("test/loss", self.test_loss, on_step=False, on_epoch=True, prog_bar=True)
 
         if batch_idx == 0:
-            x, adj, _ = batch
-            x_rev, adj_rev = self.reverse_molecule(batch)
+            x, adj, _ = batch[:10]
+            x_rev, adj_rev = self.reverse_molecule(batch[:10])
             for sim in self.reconstruction_similarity(x, adj, x_rev, adj_rev):
                 if sim is None:
                     self.test_count(1)

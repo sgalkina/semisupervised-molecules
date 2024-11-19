@@ -76,7 +76,7 @@ class NumpyTupleDataset(Dataset):
         if not os.path.exists(filepath):
             raise ValueError('Invalid filepath {} for dataset'.format(filepath))
             # return None
-        load_data = np.load(filepath)
+        load_data = np.load(filepath, allow_pickle=True)
         result = []
         i = 0
         while True:

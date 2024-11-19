@@ -1,7 +1,9 @@
 _target_: src.data.molecule_datamodule.MoFlowDataModule
 data_dir: ${paths.data_dir}
-batch_size: 4
+batch_size: 256
 num_workers: 7
 pin_memory: False
 # atomic_list: [5, 6, 7, 8, 9, 14, 15, 16, 17, 27, 33, 34, 35, 53, 0]
-atomic_list: [6, 7, 8, 9, 0]
+# atomic_list: [6, 7, 8, 9, 0]
+
+atomic_list: [1, 5, 6, 7, 8, 9, 11, 13, 14, 15, 16, 17, 19, 24, 26, 27, 33, 34, 35, 53, 79, 0]
