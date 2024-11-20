@@ -31,6 +31,8 @@ def one_hot_hmdb(data, atomic_num_list, out_size=max_atoms):
 
 
 def transform_label(label):
+    if label.dtype == np.float32:
+        return label
     spectrum = label[0]
     spectrum = [(float(s.split()[0]), float(s.split()[1])) for s in spectrum.strip().split('\n')]
     mz, ints = zip(*spectrum)
@@ -53,6 +55,13 @@ def transform_fn_hmdb(atomic_num_list, data):
     adj = np.concatenate([adj[:3], 1 - np.sum(adj[:3], axis=0, keepdims=True)],
                          axis=0).astype(np.float32)
     return node, adj, transform_label(label)
+
+
+def worker_init_fn(worker_id):
+    """Initialize worker by mapping shared memory."""
+    worker_info = torch.utils.data.get_worker_info()
+    dataset = worker_info.dataset
+
 
 
 class MoFlowDataModule(LightningDataModule):
@@ -198,9 +207,9 @@ class MoFlowDataModule(LightningDataModule):
         return DataLoader(
             dataset=self.data_train,
             batch_size=self.batch_size_per_device,
-            # num_workers=self.hparams.num_workers, # TODO: does not support multiple workers
-            num_workers=1,
+            num_workers=self.hparams.num_workers,
             pin_memory=self.hparams.pin_memory,
+            worker_init_fn=worker_init_fn,
             shuffle=False,
         )
 

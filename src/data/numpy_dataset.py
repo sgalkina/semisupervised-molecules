@@ -2,6 +2,34 @@ import os
 import numpy as np
 from torch.utils.data import Dataset
 from torch.utils.data import get_worker_info
+from multiprocessing import shared_memory, Lock
+import struct
+import data.spectrum_processing as dt
+from functools import partial
+import pandas as pd
+
+
+max_atoms = 200
+n_bonds = 4
+spec_max_mz = 2500
+max_num_peaks = 100
+min_intensity = 0.1
+
+
+def transform_label(label):
+    spectrum = label[0]
+    spectrum = [(float(s.split()[0]), float(s.split()[1])) for s in spectrum.strip().split('\n')]
+    mz, ints = zip(*spectrum)
+
+    spectrum = pd.DataFrame({'m/z': mz, 'intensity': ints})
+    spectrum = dt.FilterPeaks(spec_max_mz, min_intensity)(spectrum)
+    spectrum = dt.Normalize(intensity=True, mass=False, rescale_intensity=True, max_mz=spec_max_mz)(spectrum)
+    spectrum = dt.TopNPeaks(max_num_peaks)(spectrum)
+    spectrum = dt.ToMZIntConcatAlt(max_num_peaks)(spectrum)
+
+    spectrum = list(spectrum)
+    exact_mass = label[-1]
+    return np.array([float(exact_mass)] + spectrum)
 
 
 class NumpyTupleDatasetCached(Dataset):
@@ -14,12 +42,86 @@ class NumpyTupleDatasetCached(Dataset):
     def __init__(self, dataset_func, data_dir, chunks, transform=None):
         self.dataset_func = dataset_func
         self.data_dir = data_dir
-        self._datasets = self.load_datasets(0, self.dataset_func, self.data_dir, transform)
         self.transform = transform
+        self._datasets = None
         self.chunks = chunks
-        self.current_chunk_index = 0
+        self.lock = Lock()
         self._length = self.compute_total_length()
         print(f'Total dataset length is {self._length}')
+
+    def load_datasets_into_shared_memory(self, chunk_index):
+        """Load a single chunk into shared memory with the first dimension padded to 10,000."""
+        max_first_dim = 10000  # Fixed size for the first dimension
+
+        filename = self.dataset_func(self.chunks[chunk_index])
+        file_path = os.path.join(self.data_dir, filename)
+        print(f"Loading file {file_path} into shared memory")
+        
+        # Load datasets
+        datasets = NumpyTupleDataset.load(file_path, transform=self.transform)._datasets
+
+        if self._datasets is not None:
+            # If shared memory already exists, copy new data into it
+            for i, array in enumerate(datasets):
+                # Convert object arrays to numeric types if needed
+                if array.dtype == object:
+                    array = np.array([transform_label(array[i]) for i in range(array.shape[0])])
+                    array = np.array(array, dtype=np.float32)  # Convert to numeric (e.g., float32)
+
+                # Access existing shared memory and reshape
+                shared_array = np.frombuffer(self._datasets[i][0].buf, dtype=self._datasets[i][2])
+                shared_array = shared_array.reshape(self._datasets[i][1])  # Reshape to correct shape
+                
+                # Prepare padded array
+                padded_shape = (max_first_dim,) + array.shape[1:]  # Keep other dimensions the same
+                padded_array = np.zeros(padded_shape, dtype=array.dtype)
+                copy_shape = (min(max_first_dim, array.shape[0]),) + array.shape[1:]  # Determine the copy size
+                slices = tuple(slice(0, s) for s in copy_shape)  # Create slicing tuples
+                padded_array[slices] = array[slices]  # Copy existing data into the padded array
+                
+                np.copyto(shared_array, padded_array)  # Directly copy without flattening
+            
+            # Update the chunk index in shared memory
+            struct.pack_into("i", self._datasets[-1].buf, 0, chunk_index)
+        else:
+            # Create shared memory for new buffers
+            shared_memories = []
+            for array in datasets:
+                # Convert object arrays to numeric types if needed
+                if array.dtype == object:
+                    array = np.array([transform_label(array[i]) for i in range(array.shape[0])])
+                    array = np.array(array, dtype=np.float32)  # Convert to numeric (e.g., float32)
+
+                # Allocate shared memory with padded shape
+                padded_shape = (max_first_dim,) + array.shape[1:]  # Fix first dimension, keep others
+                shm = shared_memory.SharedMemory(create=True, size=np.prod(padded_shape) * array.itemsize)
+                shared_array = np.frombuffer(shm.buf, dtype=array.dtype).reshape(padded_shape)
+
+                # Pad and copy data
+                padded_array = np.zeros(padded_shape, dtype=array.dtype)
+                copy_shape = (min(max_first_dim, array.shape[0]),) + array.shape[1:]
+                slices = tuple(slice(0, s) for s in copy_shape)
+                padded_array[slices] = array[slices]  # Copy existing data into the padded array
+                
+                np.copyto(shared_array, padded_array)  # Directly copy the padded array
+                shared_memories.append((shm, padded_shape, array.dtype))
+
+            # Create shared memory for the current chunk index
+            cur = shared_memory.SharedMemory(create=True, size=4)
+            struct.pack_into("i", cur.buf, 0, chunk_index)
+            shared_memories.append(cur)
+
+            self._datasets = shared_memories
+
+    def retrieve_cur_chunk(self):
+        return struct.unpack_from("i", self._datasets[-1].buf, 0)[0]
+
+    def retrieve_datasets(self):
+        res = []
+        for i in range(3):
+            shared_array = np.ndarray(self._datasets[i][1], dtype=self._datasets[i][2], buffer=self._datasets[i][0].buf)
+            res.append(shared_array)
+        return res
 
     def load_datasets(self, index, dataset_fun, data_dir, transform):
         filename = dataset_fun(index)
@@ -29,8 +131,9 @@ class NumpyTupleDatasetCached(Dataset):
         return self._length
 
     def compute_total_length(self):
-        ds = self.load_datasets(self.chunks[-1], self.dataset_func, self.data_dir, self.transform)
-        last_length = ds[0].shape[0]
+        with self.lock:
+            self.load_datasets_into_shared_memory(len(self.chunks) - 1)
+        last_length = self.retrieve_datasets()[0].shape[0]
         return last_length + self.chunks[-1]
 
     def find_chunk_index(self, data_index):
@@ -40,20 +143,17 @@ class NumpyTupleDatasetCached(Dataset):
         return len(self.chunks) - 1
 
     def reload(self, data_index):
-        next_index = self.current_chunk_index + 1
-        if next_index == len(self.chunks):
-            return
-        if (data_index >= self.chunks[self.current_chunk_index]) and (data_index < self.chunks[next_index]):
-            return
-        else:
-            chunk_ind = self.find_chunk_index(data_index)
-            self._datasets = self.load_datasets(self.chunks[chunk_ind], self.dataset_func, self.data_dir, self.transform)
-            self.current_chunk_index = chunk_ind
+        chunk_ind = self.find_chunk_index(data_index)
+        current_chunk_index = self.retrieve_cur_chunk()
+        if chunk_ind != current_chunk_index:
+            self.load_datasets_into_shared_memory(chunk_ind)
 
     def __getitem__(self, data_index):
-        self.reload(data_index)
-        index = data_index - self.chunks[self.current_chunk_index]
-        batches = [dataset[index] for dataset in self._datasets]
+        with self.lock:
+            self.reload(data_index)
+            current_chunk_index = self.retrieve_cur_chunk()
+        index = data_index - self.chunks[current_chunk_index]
+        batches = [dataset[index] for dataset in self.retrieve_datasets()]
         if isinstance(index, (slice, list, np.ndarray)):
             length = len(batches[0])
             batches = [tuple([batch[i] for batch in batches])
