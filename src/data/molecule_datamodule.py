@@ -6,10 +6,12 @@ import numpy as np
 from lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import transforms
-from data.numpy_dataset import NumpyTupleDataset
+from data.numpy_dataset import NumpyTupleDataset, NumpyTupleDatasetCached
 import data.spectrum_processing as dt
 from functools import partial
 import pandas as pd
+import glob
+import re
 
 max_atoms = 200
 n_bonds = 4
@@ -51,51 +53,6 @@ def transform_fn_hmdb(atomic_num_list, data):
     adj = np.concatenate([adj[:3], 1 - np.sum(adj[:3], axis=0, keepdims=True)],
                          axis=0).astype(np.float32)
     return node, adj, transform_label(label)
-
-
-# def one_hot_hmdb(data, atomic_num_list, out_size=9):
-#     num_max_id = len(atomic_num_list)
-#     assert data.shape[0] == out_size
-#     b = np.zeros((out_size, num_max_id), dtype=np.float32)
-#     for i in range(out_size):
-#         ind = atomic_num_list.index(data[i])
-#         b[i, ind] = 1.
-#     return b
-
-
-# def transform_fn_hmdb(atomic_num_list, data):
-#     node, adj, label = data
-#     node = one_hot_hmdb(node, atomic_num_list).astype(np.float32)
-#     # single, double, triple and no-bond. Note that last channel axis is not connected instead of aromatic bond.
-#     adj = np.concatenate([adj[:3], 1 - np.sum(adj[:3], axis=0, keepdims=True)],
-#                          axis=0).astype(np.float32)
-#     return node, adj, label
-
-
-# def one_hot_hmdb(data, out_size=9, num_max_id=5):
-#     assert data.shape[0] == out_size
-#     b = np.zeros((out_size, num_max_id))
-#     # data = data[data > 0]
-#     # 6 is C: Carbon, we adopt 6:C, 7:N, 8:O, 9:F only. the last place (4) is for padding virtual node.
-#     indices = np.where(data >= 6, data - 6, num_max_id - 1)
-#     b[np.arange(out_size), indices] = 1
-#     # print('[DEBUG] data', data, 'b', b)
-#     return b
-
-
-# def transform_fn_hmdb(atomic_num_list, data):
-#     """
-
-#     :param data: ((9,), (4,9,9), (15,))
-#     :return:
-#     """
-#     node, adj, label = data   # node (9,), adj (4,9,9), label (15,)
-#     # convert to one-hot vector
-#     node = one_hot_hmdb(node).astype(np.float32)
-#     # single, double, triple and no-bond. Note that last channel axis is not connected instead of aromatic bond.
-#     adj = np.concatenate([adj[:3], 1 - np.sum(adj[:3], axis=0, keepdims=True)],
-#                          axis=0).astype(np.float32)
-#     return node, adj, label
 
 
 class MoFlowDataModule(LightningDataModule):
@@ -173,11 +130,23 @@ class MoFlowDataModule(LightningDataModule):
         self.data_val: Optional[Dataset] = None
         self.data_test: Optional[Dataset] = None
 
-        self.data_file_train = 'molecules/mona_relgcn_kekulized_ggnp.npz'
+        self.data_file_train = lambda c: f'molecules/mona_relgcn_chunk_{c}_kekulized_ggnp.npz'
         self.data_file_valid = 'molecules/mona_TEST_relgcn_kekulized_ggnp.npz'
         self.data_file_test = 'molecules/mona_TEST_relgcn_kekulized_ggnp.npz'
 
         self.batch_size_per_device = batch_size
+
+    def all_chunks(self):
+        file_pattern = os.path.join(self.hparams.data_dir, 'molecules/mona_relgcn_chunk_*_kekulized_ggnp.npz')
+        files = glob.glob(file_pattern)
+        c_values = []
+        for file in files:
+            match = re.search(os.path.join(self.hparams.data_dir, r'molecules/mona_relgcn_chunk_(\d+)_kekulized_ggnp\.npz'), file)
+            if match:
+                c_values.append(int(match.group(1)))
+        c_values.sort()
+        print('c_values', c_values)
+        return c_values
 
     @property
     def num_classes(self) -> int:
@@ -217,7 +186,7 @@ class MoFlowDataModule(LightningDataModule):
 
         # load and split datasets only if not loaded already
         if not self.data_train and not self.data_val and not self.data_test:
-            self.data_train = NumpyTupleDataset.load(os.path.join(self.hparams.data_dir, self.data_file_train), transform=self.transform_fn)
+            self.data_train = NumpyTupleDatasetCached(self.data_file_train, self.hparams.data_dir, self.all_chunks(), transform=self.transform_fn)
             self.data_val = NumpyTupleDataset.load(os.path.join(self.hparams.data_dir, self.data_file_valid), transform=self.transform_fn)
             self.data_test = NumpyTupleDataset.load(os.path.join(self.hparams.data_dir, self.data_file_test), transform=self.transform_fn)
 
@@ -229,9 +198,10 @@ class MoFlowDataModule(LightningDataModule):
         return DataLoader(
             dataset=self.data_train,
             batch_size=self.batch_size_per_device,
-            num_workers=self.hparams.num_workers,
+            # num_workers=self.hparams.num_workers, # TODO: does not support multiple workers
+            num_workers=1,
             pin_memory=self.hparams.pin_memory,
-            shuffle=True,
+            shuffle=False,
         )
 
     def val_dataloader(self) -> DataLoader[Any]:

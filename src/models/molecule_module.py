@@ -204,8 +204,9 @@ class MoFlowModule(LightningModule):
         all_smiles = []
 
         if batch_idx == 0:
-            x, adj, _ = batch[:10]
-            x_rev, adj_rev = self.reverse_molecule(batch[:10])
+            x, adj, spectrum = batch
+            x, adj, spectrum = x[:10], adj[:10], spectrum[:10]
+            x_rev, adj_rev = self.reverse_molecule((x, adj, spectrum))
             for sim, orig, recon in self.reconstruction_similarity(x, adj, x_rev, adj_rev):
                 if sim is None:
                     self.val_count.update(1)
@@ -247,8 +248,9 @@ class MoFlowModule(LightningModule):
         self.log("test/loss", self.test_loss, on_step=False, on_epoch=True, prog_bar=True)
 
         if batch_idx == 0:
-            x, adj, _ = batch[:10]
-            x_rev, adj_rev = self.reverse_molecule(batch[:10])
+            x, adj, spectrum = batch
+            x, adj, spectrum = x[:10], adj[:10], spectrum[:10]
+            x_rev, adj_rev = self.reverse_molecule((x, adj, spectrum))
             for sim in self.reconstruction_similarity(x, adj, x_rev, adj_rev):
                 if sim is None:
                     self.test_count(1)

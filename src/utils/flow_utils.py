@@ -84,7 +84,7 @@ def construct_mol(x, A, atomic_num_list):
     # last a
     atoms_exist = atoms != len(atomic_num_list) - 1
     atoms = atoms[atoms_exist]
-    print('num atoms: {}'.format(sum(atoms>0)))
+    # print('num atoms: {}'.format(sum(atoms>0)))
 
     for atom in atoms:
         mol.AddAtom(Chem.Atom(int(atomic_num_list[atom])))
@@ -375,7 +375,7 @@ def save_smiles_png(mols):
     valid_mols = filter_valid_mols(mols)
     molsPerRow = 2
     if len(valid_mols) > 0:
-        img = Draw.MolsToGridImage(valid_mols, molsPerRow=molsPerRow, subImgSize=(100, 100))
+        img = Draw.MolsToGridImage(valid_mols, molsPerRow=molsPerRow, subImgSize=(400, 400))
     else:
         img = Image.new('RGB', (10, 10))
     return img

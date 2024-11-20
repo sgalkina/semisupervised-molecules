@@ -1,6 +1,72 @@
 import os
 import numpy as np
 from torch.utils.data import Dataset
+from torch.utils.data import get_worker_info
+
+
+class NumpyTupleDatasetCached(Dataset):
+    """Dataset of a tuple of datasets but cached.
+    Data do not fit in memory (~100GB)
+
+    TODO: only works with one worker
+        """
+
+    def __init__(self, dataset_func, data_dir, chunks, transform=None):
+        self.dataset_func = dataset_func
+        self.data_dir = data_dir
+        self._datasets = self.load_datasets(0, self.dataset_func, self.data_dir, transform)
+        self.transform = transform
+        self.chunks = chunks
+        self.current_chunk_index = 0
+        self._length = self.compute_total_length()
+        print(f'Total dataset length is {self._length}')
+
+    def load_datasets(self, index, dataset_fun, data_dir, transform):
+        filename = dataset_fun(index)
+        return NumpyTupleDataset.load(os.path.join(data_dir, filename), transform=transform)._datasets
+
+    def __len__(self):
+        return self._length
+
+    def compute_total_length(self):
+        ds = self.load_datasets(self.chunks[-1], self.dataset_func, self.data_dir, self.transform)
+        last_length = ds[0].shape[0]
+        return last_length + self.chunks[-1]
+
+    def find_chunk_index(self, data_index):
+        for i, c in enumerate(self.chunks):
+            if data_index < c:
+                return i-1
+        return len(self.chunks) - 1
+
+    def reload(self, data_index):
+        next_index = self.current_chunk_index + 1
+        if next_index == len(self.chunks):
+            return
+        if (data_index >= self.chunks[self.current_chunk_index]) and (data_index < self.chunks[next_index]):
+            return
+        else:
+            chunk_ind = self.find_chunk_index(data_index)
+            self._datasets = self.load_datasets(self.chunks[chunk_ind], self.dataset_func, self.data_dir, self.transform)
+            self.current_chunk_index = chunk_ind
+
+    def __getitem__(self, data_index):
+        self.reload(data_index)
+        index = data_index - self.chunks[self.current_chunk_index]
+        batches = [dataset[index] for dataset in self._datasets]
+        if isinstance(index, (slice, list, np.ndarray)):
+            length = len(batches[0])
+            batches = [tuple([batch[i] for batch in batches])
+                    for i in range(length)]   # six.moves.range(length)]
+        else:
+            batches = tuple(batches)
+
+        if self.transform:
+            batches = self.transform(batches)
+        return batches
+
+    def get_datasets(self):
+        return self._datasets
 
 
 class NumpyTupleDataset(Dataset):
