@@ -44,12 +44,13 @@ class NumpyTupleDatasetCached(Dataset):
         self.data_dir = data_dir
         self.transform = transform
         self._datasets = None
+        self._next_datasets = None
         self.chunks = chunks
         self.lock = Lock()
         self._length = self.compute_total_length()
         print(f'Total dataset length is {self._length}')
 
-    def load_datasets_into_shared_memory(self, chunk_index):
+    def load_datasets_into_shared_memory(self, chunk_index, to_store):
         """Load a single chunk into shared memory with the first dimension padded to 10,000."""
         max_first_dim = 10000  # Fixed size for the first dimension
 
@@ -59,8 +60,15 @@ class NumpyTupleDatasetCached(Dataset):
         
         # Load datasets
         datasets = NumpyTupleDataset.load(file_path, transform=self.transform)._datasets
+        if to_store == 'current':
+            attrname = '_datasets'
+        elif to_store == 'next':
+            attrname = '_next_datasets'
+        else:
+            raise('Wrong value to store')
+        attr = getattr(self, attrname)
 
-        if self._datasets is not None:
+        if attr is not None:
             # If shared memory already exists, copy new data into it
             for i, array in enumerate(datasets):
                 # Convert object arrays to numeric types if needed
@@ -69,8 +77,8 @@ class NumpyTupleDatasetCached(Dataset):
                     array = np.array(array, dtype=np.float32)  # Convert to numeric (e.g., float32)
 
                 # Access existing shared memory and reshape
-                shared_array = np.frombuffer(self._datasets[i][0].buf, dtype=self._datasets[i][2])
-                shared_array = shared_array.reshape(self._datasets[i][1])  # Reshape to correct shape
+                shared_array = np.frombuffer(attr[i][0].buf, dtype=attr[i][2])
+                shared_array = shared_array.reshape(attr[i][1])  # Reshape to correct shape
                 
                 # Prepare padded array
                 padded_shape = (max_first_dim,) + array.shape[1:]  # Keep other dimensions the same
@@ -82,7 +90,7 @@ class NumpyTupleDatasetCached(Dataset):
                 np.copyto(shared_array, padded_array)  # Directly copy without flattening
             
             # Update the chunk index in shared memory
-            struct.pack_into("i", self._datasets[-1].buf, 0, chunk_index)
+            struct.pack_into("i", attr[-1].buf, 0, chunk_index)
         else:
             # Create shared memory for new buffers
             shared_memories = []
@@ -111,15 +119,26 @@ class NumpyTupleDatasetCached(Dataset):
             struct.pack_into("i", cur.buf, 0, chunk_index)
             shared_memories.append(cur)
 
-            self._datasets = shared_memories
+            setattr(self, attrname, shared_memories)
 
-    def retrieve_cur_chunk(self):
-        return struct.unpack_from("i", self._datasets[-1].buf, 0)[0]
 
-    def retrieve_datasets(self):
+    def retrieve_cur_chunk(self, to_retrieve):
+        if to_retrieve == 'current':
+            return struct.unpack_from("i", self._datasets[-1].buf, 0)[0]
+        elif to_retrieve == 'next':
+            return struct.unpack_from("i", self._next_datasets[-1].buf, 0)[0]
+        else:
+            raise('Wrong value to store')
+
+    def retrieve_datasets(self, to_retrieve):
         res = []
         for i in range(3):
-            shared_array = np.ndarray(self._datasets[i][1], dtype=self._datasets[i][2], buffer=self._datasets[i][0].buf)
+            if to_retrieve == 'current':
+                shared_array = np.ndarray(self._datasets[i][1], dtype=self._datasets[i][2], buffer=self._datasets[i][0].buf)
+            elif to_retrieve == 'next':
+                shared_array = np.ndarray(self._next_datasets[i][1], dtype=self._next_datasets[i][2], buffer=self._next_datasets[i][0].buf)
+            else:
+                raise('Wrong value to store')
             res.append(shared_array)
         return res
 
@@ -132,9 +151,13 @@ class NumpyTupleDatasetCached(Dataset):
 
     def compute_total_length(self):
         with self.lock:
-            self.load_datasets_into_shared_memory(len(self.chunks) - 1)
-        last_length = self.retrieve_datasets()[0].shape[0]
-        return last_length + self.chunks[-1]
+            self.load_datasets_into_shared_memory(len(self.chunks) - 1, 'current')
+        last_length = self.retrieve_datasets('current')[0].shape[0]
+        result = last_length + self.chunks[-1]
+        with self.lock:
+            self.load_datasets_into_shared_memory(0, 'current')
+            self.load_datasets_into_shared_memory(1, 'next')
+        return result
 
     def find_chunk_index(self, data_index):
         for i, c in enumerate(self.chunks):
@@ -144,16 +167,22 @@ class NumpyTupleDatasetCached(Dataset):
 
     def reload(self, data_index):
         chunk_ind = self.find_chunk_index(data_index)
-        current_chunk_index = self.retrieve_cur_chunk()
-        if chunk_ind != current_chunk_index:
-            self.load_datasets_into_shared_memory(chunk_ind)
+        current_chunk_index = self.retrieve_cur_chunk('current')
+        current_chunk_next_index = self.retrieve_cur_chunk('next')
+        if chunk_ind == current_chunk_index:
+            return 'current'
+        if chunk_ind == current_chunk_next_index:
+            return 'next'
+        self.load_datasets_into_shared_memory(current_chunk_next_index, 'current')
+        self.load_datasets_into_shared_memory(chunk_ind, 'next')
+        return 'next'
 
     def __getitem__(self, data_index):
         with self.lock:
-            self.reload(data_index)
-            current_chunk_index = self.retrieve_cur_chunk()
+            retrieve_variable = self.reload(data_index)
+            current_chunk_index = self.retrieve_cur_chunk(retrieve_variable)
         index = data_index - self.chunks[current_chunk_index]
-        batches = [dataset[index] for dataset in self.retrieve_datasets()]
+        batches = [dataset[index] for dataset in self.retrieve_datasets(retrieve_variable)]
         if isinstance(index, (slice, list, np.ndarray)):
             length = len(batches[0])
             batches = [tuple([batch[i] for batch in batches])

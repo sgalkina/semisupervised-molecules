@@ -151,6 +151,8 @@ class MoFlow(nn.Module):
         :param x: (256,9,5)
         :return:
         """
+        print('self.training', self.training)
+
         h = x  # (256,9,5)
         # add uniform noise to node feature matrices
         # + noise didn't change log-det. 1. change to logit transform 2. *0.9 ---> *other value???
